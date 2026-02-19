@@ -7,34 +7,39 @@ import base64
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
-import torch
-from transformers import AutoImageProcessor, AutoModel
-from supabase import create_client, Client
 
 app = Flask(__name__)
 CORS(app)
 
-# 1. Supabase Setup (Fast, safe to run on boot)
-print("🔌 Connecting to Supabase...")
-supabase: Client = create_client(
-    os.environ.get("SUPABASE_URL"), 
-    os.environ.get("SUPABASE_ANON_KEY")
-)
-print("✅ Supabase Connected.")
-
-# Global placeholders for the AI model
+# Global placeholders
 processor = None
 model = None
+supabase = None
+torch_module = None
 
-def load_ai_model():
-    """Loads the model only when requested to prevent boot timeouts"""
-    global processor, model
+def initialize_system():
+    """Ultra-lazy load: delays all heavy imports until the first search"""
+    global processor, model, supabase, torch_module
+    
     if model is None:
-        print("📥 First request detected. Downloading/Loading DINOv2 (This takes a moment)...")
+        print("⏳ First request: Importing heavy AI libraries...")
+        import torch
+        from transformers import AutoImageProcessor, AutoModel
+        from supabase import create_client
+        
+        torch_module = torch
+
+        print("🔌 Connecting to Supabase...")
+        supabase = create_client(
+            os.environ.get("SUPABASE_URL"), 
+            os.environ.get("SUPABASE_ANON_KEY")
+        )
+
+        print("📥 Loading DINOv2 (This takes a moment)...")
         processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
         model = AutoModel.from_pretrained('facebook/dinov2-base')
         model.eval()
-        print("✅ AI Model Ready.")
+        print("✅ System Fully Initialized.")
 
 @app.route('/')
 def health():
@@ -43,39 +48,31 @@ def health():
 @app.route('/match', methods=['POST'])
 def match():
     try:
-        # Lazy load the model so the server boots instantly
-        load_ai_model()
+        # Trigger the delayed loading
+        initialize_system()
 
         data = request.get_json()
         if not data or 'image' not in data:
-            print("🚨 Error: No image provided in request")
             return jsonify({"error": "No image"}), 400
 
         print("🖼️ Processing incoming image...")
         
-        # A. Decode Image
         base64_str = data['image'].split(',')[1] if ',' in data['image'] else data['image']
         image = Image.open(io.BytesIO(base64.b64decode(base64_str))).convert('RGB')
         
-        # B. 70% Center Crop & Resize
         w, h = image.size
         image = image.crop((w * 0.15, h * 0.15, w * 0.85, h * 0.85))
         image.thumbnail((512, 512))
-        print(f"✂️ Image cropped and resized to: {image.size}")
 
-        # C. Vectorize
         print("🧠 Generating vector embedding...")
         inputs = processor(images=image, return_tensors="pt")
-        with torch.no_grad():
+        with torch_module.no_grad():
             outputs = model(**inputs)
         
-        # Get CLS token vector
         vector = outputs.last_hidden_state[:, 0, :].squeeze().tolist()
         final_vector = vector[:768]
-        print("✅ Vector generated successfully.")
 
-        # D. Database Match via Supabase RPC
-        print("🔍 Searching Supabase for matches...")
+        print("🔍 Searching Supabase...")
         response = supabase.rpc('match_products_advanced', {
             'query_embedding': final_vector,
             'query_colors': ["#000000"], 
@@ -87,7 +84,7 @@ def match():
         return jsonify({"success": True, "matches": response.data})
 
     except Exception as e:
-        print(f"🚨 Error during match: {str(e)}")
+        print(f"🚨 Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
