@@ -1,0 +1,15 @@
+{
+  "runtime": "python3.11",
+  "memory": 2048,
+  "timeout": 120,
+  "environment": {
+    "PYTHONUNBUFFERED": "1"
+  },
+  "system_packages": [
+    "libsm6",
+    "libxext6",
+    "libxrender-dev",
+    "libjpeg-dev",
+    "zlib1g-dev"
+  ]
+}
