@@ -48,7 +48,6 @@ def health():
 @app.route('/match', methods=['POST'])
 def match():
     try:
-        # Trigger the delayed loading
         initialize_system()
 
         data = request.get_json()
@@ -56,35 +55,79 @@ def match():
             return jsonify({"error": "No image"}), 400
 
         print("🖼️ Processing incoming image...")
-        
         base64_str = data['image'].split(',')[1] if ',' in data['image'] else data['image']
-        image = Image.open(io.BytesIO(base64.b64decode(base64_str))).convert('RGB')
         
-        w, h = image.size
-        image = image.crop((w * 0.15, h * 0.15, w * 0.85, h * 0.85))
-        image.thumbnail((512, 512))
+        # Load as RGBA first to accurately read transparency for color extraction
+        image_rgba = Image.open(io.BytesIO(base64.b64decode(base64_str))).convert('RGBA')
+        
+        # --- 1. DOMINANT COLOR EXTRACTION ---
+        print("🎨 Extracting dominant colors...")
+        tiny_img = image_rgba.resize((50, 50))
+        pixels = tiny_img.load()
+        color_counts = {}
+        
+        for y in range(tiny_img.height):
+            for x in range(tiny_img.width):
+                r, g, b, a = pixels[x, y]
+                
+                # Skip transparent pixels
+                if a < 128: 
+                    continue
+                # Skip pure whites, blacks, and grays
+                if (r > 240 and g > 240 and b > 240) or (r < 15 and g < 15 and b < 15): 
+                    continue 
+                
+                hex_code = f"#{r:02x}{g:02x}{b:02x}"
+                color_counts[hex_code] = color_counts.get(hex_code, 0) + 1
+                
+        # Sort by occurrence and grab top 3
+        top_colors = sorted(color_counts, key=color_counts.get, reverse=True)[:3]
+        print(f"🎨 Top Colors Found: {top_colors}")
 
+        # --- 2. CENTER 70% CROP & RESIZE ---
+        print("✂️ Cropping center 70%...")
+        image_rgb = image_rgba.convert('RGB')
+        w, h = image_rgb.size
+        
+        crop_w = int(w * 0.70)
+        crop_h = int(h * 0.70)
+        crop_x = int((w - crop_w) / 2)
+        crop_y = int((h - crop_h) / 2)
+        
+        image_cropped = image_rgb.crop((crop_x, crop_y, crop_x + crop_w, crop_y + crop_h))
+        image_cropped.thumbnail((512, 512))
+
+        # --- 3. VECTORIZATION ---
         print("🧠 Generating vector embedding...")
-        inputs = processor(images=image, return_tensors="pt")
+        inputs = processor(images=image_cropped, return_tensors="pt")
         with torch_module.no_grad():
             outputs = model(**inputs)
         
         vector = outputs.last_hidden_state[:, 0, :].squeeze().tolist()
         final_vector = vector[:768]
+        
+        # Print sample to verify vector generation
+        print(f"📊 Vector Sample (first 5 dims): {final_vector[:5]}")
 
+        # --- 4. DATABASE MATCHING ---
         print("🔍 Searching Supabase...")
         response = supabase.rpc('match_products_advanced', {
             'query_embedding': final_vector,
-            'query_colors': ["#000000"], 
-            'match_threshold': 0.35,
+            'query_colors': top_colors,
+            'match_threshold': 0.35, 
             'match_count': 6
         }).execute()
         
         print(f"🎉 Found {len(response.data)} matches!")
-        return jsonify({"success": True, "matches": response.data})
+        return jsonify({
+            "success": True, 
+            "matches": response.data,
+            "colors_detected": top_colors
+        })
 
     except Exception as e:
-        print(f"🚨 Error: {str(e)}")
+        import traceback
+        print(f"🚨 Error: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
