@@ -14,7 +14,7 @@ from supabase import create_client, Client
 app = Flask(__name__)
 CORS(app)
 
-# 1. Supabase Setup
+# 1. Supabase Setup (Fast, safe to run on boot)
 print("🔌 Connecting to Supabase...")
 supabase: Client = create_client(
     os.environ.get("SUPABASE_URL"), 
@@ -22,20 +22,30 @@ supabase: Client = create_client(
 )
 print("✅ Supabase Connected.")
 
-# 2. DINOv2 Loading
-print("📥 Loading DINOv2 (PyTorch CPU version)...")
-processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
-model = AutoModel.from_pretrained('facebook/dinov2-base')
-model.eval()
-print("✅ AI Model Ready.")
+# Global placeholders for the AI model
+processor = None
+model = None
+
+def load_ai_model():
+    """Loads the model only when requested to prevent boot timeouts"""
+    global processor, model
+    if model is None:
+        print("📥 First request detected. Downloading/Loading DINOv2 (This takes a moment)...")
+        processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
+        model = AutoModel.from_pretrained('facebook/dinov2-base')
+        model.eval()
+        print("✅ AI Model Ready.")
 
 @app.route('/')
 def health():
-    return "API is Online and DINOv2 is loaded."
+    return "API is Online. Model will load on the first match request."
 
 @app.route('/match', methods=['POST'])
 def match():
     try:
+        # Lazy load the model so the server boots instantly
+        load_ai_model()
+
         data = request.get_json()
         if not data or 'image' not in data:
             print("🚨 Error: No image provided in request")
