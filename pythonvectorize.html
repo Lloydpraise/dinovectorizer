@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bulk Vectorizer Engine</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #0f1115; color: white; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background-color: #1a1d23; }
+        ::-webkit-scrollbar-thumb { background-color: #374151; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background-color: #4b5563; }
+        .glass-panel { background: #1a1d23; border: 1px solid #2b2f3a; }
+        .input-dark { background: #0f1115; border: 1px solid #2b2f3a; color: white; }
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="h-screen flex flex-col p-4 gap-4 max-w-[1920px] mx-auto overflow-hidden">
+
+    <div class="flex items-center justify-between shrink-0 glass-panel p-4 rounded-xl">
+        <div>
+            <h1 class="text-xl font-bold text-white flex items-center gap-3">
+                <div class="w-8 h-8 rounded bg-purple-600 flex items-center justify-center shadow-lg">
+                    <i class="fa-solid fa-server text-white text-sm"></i>
+                </div>
+                Serverless Vectorizer
+            </h1>
+            <p class="text-xs text-white/40 mt-1">Routes products to Leapcell DETR/DINO backend</p>
+        </div>
+        
+        <div class="flex gap-3 items-center">
+            
+            <div class="flex flex-col gap-1">
+                <label class="text-[10px] text-white/40 uppercase font-bold ml-1">Leapcell App URL</label>
+                <input type="text" id="leapcellUrl" value="https://YOUR-APP-NAME.leapcell.dev/vectorize" class="input-dark px-3 py-2 rounded-lg text-sm w-72" placeholder="https://...">
+            </div>
+
+            <div class="flex flex-col gap-1">
+                <label class="text-[10px] text-white/40 uppercase font-bold ml-1">Business ID</label>
+                <input type="text" id="businessId" value="kisasacraft66" class="input-dark px-3 py-2 rounded-lg text-sm w-32 text-center">
+            </div>
+
+            <div class="flex flex-col gap-1">
+                <label class="text-[10px] text-white/40 uppercase font-bold ml-1">Delay (ms)</label>
+                <input type="number" id="delayMs" value="15000" class="input-dark px-3 py-2 rounded-lg text-sm w-24 text-center" title="Time between requests to clear RAM">
+            </div>
+
+            <div class="h-8 w-px bg-[#2b2f3a] mx-2 mt-4"></div>
+
+            <button onclick="loadQueue()" class="bg-[#2b2f3a] hover:bg-white/10 text-white px-6 py-2 rounded-lg text-sm font-bold border border-white/5 mt-4 transition-colors">
+                <i class="fa-solid fa-cloud-arrow-down mr-2"></i> Fetch
+            </button>
+        </div>
+    </div>
+
+    <div class="flex gap-6 flex-1 min-h-0">
+        
+        <div class="w-80 glass-panel rounded-xl flex flex-col shrink-0">
+            <div class="p-4 border-b border-[#2b2f3a] bg-[#232730] flex justify-between items-center">
+                <h2 class="font-semibold text-sm text-white/80">Pending Queue</h2>
+                <span id="queueCount" class="bg-[#2b2f3a] text-white/60 px-2 py-0.5 rounded text-xs font-mono">0</span>
+            </div>
+            
+            <div class="p-4 flex flex-col gap-3 flex-1 overflow-hidden">
+                <button onclick="startWorker()" id="startBtn" class="w-full py-3 bg-green-600 hover:bg-green-500 text-white rounded-lg text-sm font-bold shadow-lg transition-all flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-play"></i> Start Processing
+                </button>
+                <button onclick="stopWorker()" id="stopBtn" class="hidden w-full py-3 bg-red-600 hover:bg-red-500 text-white rounded-lg text-sm font-bold shadow-lg transition-all flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-stop"></i> Stop Worker
+                </button>
+
+                <div id="activeItem" class="hidden bg-blue-900/20 border border-blue-500/30 rounded-lg p-3 my-2">
+                    <div class="text-[10px] text-blue-400 uppercase font-bold mb-1 flex items-center gap-2">
+                        <i class="fa-solid fa-circle-notch fa-spin"></i> Processing Now
+                    </div>
+                    <div id="activeTitle" class="text-sm font-medium text-white truncate">...</div>
+                </div>
+
+                <div id="queueList" class="flex-1 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+                    <div class="text-center text-white/20 text-xs py-10 italic">Queue empty. Fetch products to begin.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="flex-1 glass-panel rounded-xl flex flex-col overflow-hidden relative">
+            <div class="p-4 border-b border-[#2b2f3a] bg-[#232730] flex justify-between items-center z-10 shrink-0">
+                <h2 class="font-semibold text-sm text-white/80">Completed Vectors</h2>
+                <div class="text-xs text-green-400 font-bold bg-green-900/20 px-3 py-1 rounded">
+                    Success: <span id="successCount">0</span>
+                </div>
+            </div>
+            
+            <div id="resultsGrid" class="flex-1 overflow-y-auto p-4 grid gap-4 content-start" style="grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));">
+                </div>
+        </div>
+    </div>
+
+    <script>
+        // --- CONSTANTS ---
+        const SUPABASE_URL = "https://xgtnbxdxbbywvzrttixf.supabase.co";
+        const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhndG5ieGR4YmJ5d3Z6cnR0aXhmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY0Nzg5NTAsImV4cCI6MjA3MjA1NDk1MH0.YGk0vFyIJEiSpu5phzV04Mh4lrHBlfYLFtPP_afFtMQ";
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        let queue = [];
+        let isRunning = false;
+        let successTotal = 0;
+
+        // --- FETCH QUEUE ---
+        async function loadQueue() {
+            const bizId = document.getElementById('businessId').value.trim();
+            if (!bizId) return alert("Please enter a Business ID");
+
+            const list = document.getElementById('queueList');
+            list.innerHTML = `<div class="text-center py-4 text-white/50"><i class="fa-solid fa-spinner fa-spin mr-2"></i> Fetching...</div>`;
+            
+            // Only fetch products that have NOT been vectorized yet
+            const { data, error } = await supabase
+                .from('products')
+                .select('id, title, images, shopify_images')
+                .eq('business_id', bizId)
+                .eq('vectorized', false)
+                .limit(200); // Process in batches of 200
+
+            if (error) {
+                list.innerHTML = `<div class="text-center py-4 text-red-400">Error: ${error.message}</div>`;
+                return;
+            }
+
+            queue = data || [];
+            updateQueueUI();
+        }
+
+        function updateQueueUI() {
+            const list = document.getElementById('queueList');
+            document.getElementById('queueCount').innerText = queue.length;
+            list.innerHTML = '';
+            
+            if(queue.length === 0) {
+                 list.innerHTML = `<div class="text-center text-green-400 text-sm py-10"><i class="fa-solid fa-check-circle text-2xl mb-2 block"></i> All Caught Up!</div>`;
+                 return;
+            }
+
+            queue.forEach((p, idx) => {
+                const el = document.createElement('div');
+                el.className = "text-xs text-white/60 truncate p-2 border-b border-white/5 flex items-center gap-2";
+                el.innerHTML = `<span class="text-white/30 w-4">${idx + 1}.</span> <span>${p.title}</span>`;
+                list.appendChild(el);
+            });
+        }
+
+        // --- WORKER LOOP ---
+        function startWorker() {
+            if (queue.length === 0) return alert("Queue is empty. Fetch products first.");
+            
+            const url = document.getElementById('leapcellUrl').value;
+            if(!url || !url.includes('http')) return alert("Please enter a valid Leapcell App URL.");
+
+            isRunning = true;
+            document.getElementById('startBtn').classList.add('hidden');
+            document.getElementById('stopBtn').classList.remove('hidden');
+            document.getElementById('activeItem').classList.remove('hidden');
+            
+            processNext();
+        }
+
+        function stopWorker() {
+            isRunning = false;
+            document.getElementById('startBtn').classList.remove('hidden');
+            document.getElementById('stopBtn').classList.add('hidden');
+            document.getElementById('activeItem').classList.add('hidden');
+        }
+
+        async function processNext() {
+            if (!isRunning || queue.length === 0) {
+                stopWorker();
+                if(queue.length === 0) updateQueueUI();
+                return;
+            }
+
+            const item = queue.shift();
+            updateQueueUI(); // Remove from UI list
+            document.getElementById('activeTitle').innerText = item.title;
+
+            // Normalize Images array
+            let imgArray = [];
+            try { 
+                imgArray = typeof item.shopify_images === 'string' ? JSON.parse(item.shopify_images) : item.shopify_images; 
+            } catch(e) {}
+            
+            if (!imgArray || imgArray.length === 0) {
+                try { 
+                    imgArray = typeof item.images === 'string' ? JSON.parse(item.images) : item.images; 
+                } catch(e) {}
+            }
+
+            const previewImg = (imgArray && imgArray.length > 0) ? imgArray[0] : 'https://via.placeholder.com/150';
+
+            try {
+                const leapcellUrl = document.getElementById('leapcellUrl').value.trim();
+                const delayMs = parseInt(document.getElementById('delayMs').value) || 15000;
+
+                // Send to Python Backend
+                const response = await fetch(leapcellUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: item.id, images: imgArray })
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    // Update Success Grid
+                    successTotal++;
+                    document.getElementById('successCount').innerText = successTotal;
+                    renderCompletedCard(item.id, item.title, previewImg, result.updated_columns);
+                } else {
+                    console.error("Backend Error on", item.id, result.error);
+                    renderFailedCard(item.title, result.error || "Server Error");
+                }
+
+                // Wait to clear RAM before sending next
+                setTimeout(processNext, delayMs);
+
+            } catch (err) {
+                console.error("Network Error on", item.id, err);
+                renderFailedCard(item.title, "Network/Timeout Error");
+                
+                // If it's a network error, stop the worker to prevent a flood of failures
+                stopWorker();
+                alert("Worker stopped due to Network Error. Please check backend server.");
+            }
+        }
+
+        // --- RENDER CARDS ---
+        function renderCompletedCard(id, title, imgUrl, updatedColumns) {
+            const grid = document.getElementById('resultsGrid');
+            
+            // Generate Badges for which vectors were saved
+            let badges = '';
+            ['vector_1', 'vector_2', 'vector_3'].forEach(v => {
+                if(updatedColumns.includes(v)) {
+                    badges += `<span class="bg-green-500/20 text-green-400 border border-green-500/30 px-1 rounded text-[8px] uppercase">${v.replace('_', '')}</span>`;
+                }
+            });
+
+            const card = document.createElement('div');
+            card.className = "bg-[#1a1d23] border border-[#2b2f3a] rounded-lg overflow-hidden fade-in flex flex-col h-48";
+            card.innerHTML = `
+                <div class="h-32 bg-black/50 p-2 flex items-center justify-center relative">
+                    <img src="${imgUrl}" class="max-h-full max-w-full object-contain mix-blend-lighten">
+                    <div class="absolute top-2 right-2 flex gap-1">
+                        ${badges}
+                    </div>
+                </div>
+                <div class="p-2 border-t border-[#2b2f3a] flex-1 flex flex-col justify-center">
+                    <div class="text-xs text-white/90 font-medium truncate" title="${title}">${title}</div>
+                    <div class="text-[9px] text-white/40 font-mono mt-0.5">${id.split('_').pop()}</div>
+                </div>
+            `;
+            grid.prepend(card);
+        }
+
+        function renderFailedCard(title, errorMsg) {
+            const grid = document.getElementById('resultsGrid');
+            const card = document.createElement('div');
+            card.className = "bg-red-900/10 border border-red-900/50 rounded-lg overflow-hidden fade-in flex flex-col h-48";
+            card.innerHTML = `
+                <div class="h-32 bg-black/50 flex flex-col items-center justify-center text-red-500/50 p-4 text-center">
+                    <i class="fa-solid fa-triangle-exclamation text-2xl mb-2"></i>
+                    <div class="text-[9px] leading-tight line-clamp-3">${errorMsg}</div>
+                </div>
+                <div class="p-2 border-t border-red-900/30 flex-1 flex flex-col justify-center">
+                    <div class="text-xs text-red-400 font-medium truncate" title="${title}">${title}</div>
+                    <div class="text-[9px] text-red-500/50 font-mono mt-0.5">FAILED</div>
+                </div>
+            `;
+            grid.prepend(card);
+        }
+    </script>
+</body>
+</html>

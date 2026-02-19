@@ -5,5 +5,6 @@ transformers
 gunicorn
 supabase
 timm
+requests
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
