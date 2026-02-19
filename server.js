@@ -1,86 +1,64 @@
-// 1. HARD-SILENCE THE ENGINE (Must be the very first lines)
+// 1. SILENCE THE CPU PROBE (Must be the very first lines)
 process.env.ORT_DISABLE_CPU_PROBE = '1'; 
 process.env.ONNXRUNTIME_NODE_INSTALL_SKIP = '1';
-
-const { pipeline, RawImage, env } = require('@xenova/transformers');
-
-// 2. ULTRA-STABLE AI CONFIGURATION
-env.allowLocalModels = false;
-env.cacheDir = '/tmp/.cache'; // Leapcell only allows writes in /tmp
-env.backends.onnx.wasm.numThreads = 1;
-env.backends.onnx.wasm.simd = false; // Disable SIMD to prevent instruction probing
-env.backends.onnx.wasm.proxy = false;
 
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const sharp = require('sharp'); 
 
+// 2. DELAY TRANSFORMERS IMPORT
+// We only import transformers once the server is already "Listening"
+let pipeline, RawImage, env;
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '30mb' })); 
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
-
 let extractor = null;
 
-// Helper to log RAM usage
-const logMemory = () => {
-    const used = process.memoryUsage().heapUsed / 1024 / 1024;
-    console.log(`📊 [MEMORY] Current Usage: ${Math.round(used)} MB`);
-};
+// Health Check Route (Test this in your browser: https://your-app.leapcell.dev/health)
+app.get('/health', (req, res) => res.send({ status: 'online', ai_ready: !!extractor }));
 
-// Check if the environment is Windows and adjust cache directory accordingly
-if (process.platform === 'win32') {
-    env.cacheDir = 'C:\\temp'; // Change to a writable directory on Windows
-}
-
-// 3. LAZY LOAD WITH STABILIZATION
-async function loadModel() {
-    console.log("⏱️ [SYSTEM] Stabilization delay (3s)...");
-    await new Promise(r => setTimeout(r, 3000));
-    
-    console.log("📥 [SYSTEM] Attempting DINOv2 Base (768-dim) load...");
-    logMemory();
+async function loadAI() {
+    console.log("⏱️ [SYSTEM] Waiting 10s for container stabilization...");
+    await new Promise(r => setTimeout(r, 10000));
 
     try {
+        console.log("📥 [SYSTEM] Loading AI Library...");
+        // Dynamically require so we don't crash the boot process
+        const transformers = require('@xenova/transformers');
+        pipeline = transformers.pipeline;
+        RawImage = transformers.RawImage;
+        env = transformers.env;
+
+        // FORCE PURE WASM MODE (The most stable mode)
+        env.allowLocalModels = false;
+        env.cacheDir = '/tmp/.cache';
+        env.backends.onnx.wasm.numThreads = 1;
+        env.backends.onnx.wasm.simd = false; // Prevents the cpuinfo crash loop
+        env.backends.onnx.wasm.proxy = false;
+
+        console.log("📥 [SYSTEM] Attempting DINOv2 Base (768-dim) load...");
         extractor = await pipeline('image-feature-extraction', 'Xenova/dinov2-base', { 
             quantized: true 
         });
         console.log("✅ [SYSTEM] AI Model Ready.");
-        logMemory();
     } catch (error) {
-        console.error("❌ [SYSTEM] Failed to load AI model:", error.message);
+        console.error("❌ [SYSTEM] AI Load Failed:", error.message);
     }
 }
-loadModel();
-
-app.get('/', (req, res) => {
-    logMemory();
-    res.send('AI Visual Matcher is Active');
-});
 
 app.post('/match', async (req, res) => {
     try {
+        if (!extractor) return res.status(503).json({ error: "AI is still booting (takes ~30s on first run)" });
         const { image } = req.body;
-        if (!image) return res.status(400).json({ error: "No image" });
-        if (!extractor) return res.status(503).json({ error: "Model loading" });
-
-        console.log("📸 [REQUEST] Processing new image...");
+        
+        console.log("📸 [REQUEST] Processing image...");
         const buffer = Buffer.from(image.replace(/^data:image\/\w+;base64,/, ""), 'base64');
         
-        // Color Extraction
-        const tiny = await sharp(buffer).resize(50, 50).raw().toBuffer({ resolveWithObject: true });
-        const colorCounts = {};
-        for (let i = 0; i < tiny.data.length; i += 3) {
-            const r = tiny.data[i], g = tiny.data[i+1], b = tiny.data[i+2];
-            if ((r > 240 && g > 240 && b > 240) || (r < 15 && g < 15 && b < 15)) continue; 
-            const hex = "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
-            colorCounts[hex] = (colorCounts[hex] || 0) + 1;
-        }
-        const topColors = Object.keys(colorCounts).sort((a, b) => colorCounts[b] - colorCounts[a]).slice(0, 3);
-
-        // Center 70% Crop & Resize
+        // Center 70% Crop
         const meta = await sharp(buffer).metadata();
         const processed = await sharp(buffer)
             .extract({ 
@@ -101,15 +79,13 @@ app.post('/match', async (req, res) => {
         // Supabase Match
         const { data: matches, error: dbError } = await supabase.rpc('match_products_advanced', {
             query_embedding: vector,
-            query_colors: topColors,
+            query_colors: ["#000000"], // Color logic can be added back later
             match_threshold: 0.4,
             match_count: 6
         });
 
         if (dbError) throw dbError;
-        console.log(`🎉 [SUCCESS] Found ${matches?.length || 0} matches.`);
-        res.json({ success: true, matches, colors_detected: topColors });
-
+        res.json({ success: true, matches });
     } catch (err) {
         console.error("🚨 Request Error:", err.message);
         res.status(500).json({ error: err.message });
@@ -117,4 +93,7 @@ app.post('/match', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server listening on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 [SERVER] Listening on port ${PORT}`);
+    loadAI(); // Start AI loading AFTER server is listening
+});
