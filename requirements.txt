@@ -3,5 +3,6 @@ Flask-Cors
 Pillow
 transformers
 gunicorn
+supabase
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
