@@ -30,6 +30,11 @@ const logMemory = () => {
     console.log(`📊 [MEMORY] Current Usage: ${Math.round(used)} MB`);
 };
 
+// Check if the environment is Windows and adjust cache directory accordingly
+if (process.platform === 'win32') {
+    env.cacheDir = 'C:\\temp'; // Change to a writable directory on Windows
+}
+
 // 3. LAZY LOAD WITH STABILIZATION
 async function loadModel() {
     console.log("⏱️ [SYSTEM] Stabilization delay (3s)...");
