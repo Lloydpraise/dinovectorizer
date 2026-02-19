@@ -1,4 +1,7 @@
 import os
+# Force Hugging Face to use the writable /tmp directory on Leapcell
+os.environ['HF_HOME'] = '/tmp/huggingface'
+
 import io
 import base64
 from flask import Flask, request, jsonify
@@ -6,15 +9,10 @@ from flask_cors import CORS
 from PIL import Image
 import torch
 from transformers import ViTImageProcessor, ViTModel
-from supabase import create_client, Client
 
 app = Flask(__name__)
 CORS(app)
 
-# 1. Supabase Setup
-supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_ANON_KEY"))
-
-# 2. Pure PyTorch Loading (CPU Only)
 print("📥 Loading DINOv2 (PyTorch CPU version)...")
 processor = ViTImageProcessor.from_pretrained('facebook/dinov2-base')
 model = ViTModel.from_pretrained('facebook/dinov2-base')
@@ -23,7 +21,7 @@ print("✅ AI Model Ready.")
 
 @app.route('/')
 def health():
-    return "API is Online"
+    return "API is Online and DINOv2 is loaded."
 
 @app.route('/match', methods=['POST'])
 def match():
@@ -37,7 +35,6 @@ def match():
         image = Image.open(io.BytesIO(base64.b64decode(base64_str))).convert('RGB')
         
         w, h = image.size
-        # Crop to center 70%
         image = image.crop((w * 0.15, h * 0.15, w * 0.85, h * 0.85))
         image.thumbnail((512, 512))
 
@@ -46,18 +43,10 @@ def match():
         with torch.no_grad():
             outputs = model(**inputs)
         
-        # DINOv2 base uses 768 dimensions
         vector = outputs.pooler_output.squeeze().tolist()
 
-        # C. Database Match
-        response = supabase.rpc('match_products_advanced', {
-            'query_embedding': vector[:768],
-            'query_colors': ["#000000"], 
-            'match_threshold': 0.35,
-            'match_count': 6
-        }).execute()
-
-        return jsonify({"success": True, "matches": response.data})
+        # C. Return Raw Vector
+        return jsonify({"success": True, "vector": vector[:768]})
 
     except Exception as e:
         print(f"🚨 Error: {str(e)}")
