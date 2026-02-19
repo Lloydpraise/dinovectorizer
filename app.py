@@ -14,18 +14,16 @@ CORS(app)
 # 1. Supabase Setup
 supabase: Client = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_ANON_KEY"))
 
-# 2. PURE PYTORCH LOADING (More stable than ONNX)
-print("📥 Loading DINOv2 Base (768-dim) via PyTorch...")
-# We use the ViT version of DINOv2 for maximum stability
-device = "cpu"
+# 2. Pure PyTorch Loading (CPU Only)
+print("📥 Loading DINOv2 (PyTorch CPU version)...")
 processor = ViTImageProcessor.from_pretrained('facebook/dinov2-base')
-model = ViTModel.from_pretrained('facebook/dinov2-base').to(device)
+model = ViTModel.from_pretrained('facebook/dinov2-base')
 model.eval()
 print("✅ AI Model Ready.")
 
 @app.route('/')
 def health():
-    return "API Online"
+    return "API is Online"
 
 @app.route('/match', methods=['POST'])
 def match():
@@ -39,28 +37,26 @@ def match():
         image = Image.open(io.BytesIO(base64.b64decode(base64_str))).convert('RGB')
         
         w, h = image.size
-        # Crop 15% from each side to leave the center 70%
+        # Crop to center 70%
         image = image.crop((w * 0.15, h * 0.15, w * 0.85, h * 0.85))
         image.thumbnail((512, 512))
 
-        # B. Vectorize (Using Torch)
-        inputs = processor(images=image, return_tensors="pt").to(device)
+        # B. Vectorize
+        inputs = processor(images=image, return_tensors="pt")
         with torch.no_grad():
             outputs = model(**inputs)
         
-        # Get the 768-dim vector from the [CLS] token (pooler_output)
+        # DINOv2 base uses 768 dimensions
         vector = outputs.pooler_output.squeeze().tolist()
 
         # C. Database Match
-        # Note: Ensure your 'match_products_advanced' RPC is ready for 768 dimensions
         response = supabase.rpc('match_products_advanced', {
             'query_embedding': vector[:768],
             'query_colors': ["#000000"], 
-            'match_threshold': 0.35, # Slightly lower for better match variety
+            'match_threshold': 0.35,
             'match_count': 6
         }).execute()
 
-        print(f"🎉 Success: Found {len(response.data)} matches.")
         return jsonify({"success": True, "matches": response.data})
 
     except Exception as e:
