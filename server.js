@@ -1,12 +1,12 @@
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
-const { pipeline, RawImage } = require('@xenova/transformers');
+// IMPORT 'env' to configure the AI engine
+const { pipeline, RawImage, env } = require('@xenova/transformers');
 const sharp = require('sharp'); 
 
 const app = express();
 app.use(cors());
-// Set high limit for base64 image uploads
 app.use(express.json({ limit: '20mb' })); 
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -20,13 +20,23 @@ if (SUPABASE_URL && SUPABASE_KEY) {
     console.warn("⚠️ Warning: Supabase environment variables are missing.");
 }
 
+// --- CONTAINER FIXES ---
+env.allowLocalModels = false; 
+env.cacheDir = '/tmp/.cache'; // Force downloads into the writable temp folder
+
 let extractor;
 
-// Pre-load the AI model when the server starts so requests are instant
 async function loadModel() {
-    console.log("📥 Loading DINOv2 Base (768-dim) into RAM...");
+    console.log("📥 Downloading and Loading DINOv2 Base (768-dim) into RAM...");
     try {
-        extractor = await pipeline('image-feature-extraction', 'Xenova/dinov2-base', { quantized: true });
+        extractor = await pipeline('image-feature-extraction', 'Xenova/dinov2-base', { 
+            quantized: true,
+            // Stop ONNX from probing the restricted CPU files
+            session_options: {
+                intra_op_num_threads: 1,
+                inter_op_num_threads: 1
+            }
+        });
         console.log("✅ AI Model Ready.");
     } catch (error) {
         console.error("❌ Failed to load AI model:", error);
@@ -34,12 +44,10 @@ async function loadModel() {
 }
 loadModel();
 
-// Simple health check route
 app.get('/', (req, res) => {
     res.send('AI Visual Matcher is running.');
 });
 
-// The main processing route
 app.post('/match', async (req, res) => {
     try {
         const { image } = req.body;
@@ -52,19 +60,14 @@ app.post('/match', async (req, res) => {
         const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
         const buffer = Buffer.from(base64Data, 'base64');
         
-        // 2. Extract Colors (Using Sharp's raw pixel data)
+        // 2. Extract Colors
         const tinyBuffer = await sharp(buffer).resize(50, 50).raw().toBuffer({ resolveWithObject: true });
         const colorCounts = {};
         const pixels = tinyBuffer.data;
         
-        for (let i = 0; i < pixels.length; i += 3) { // Sharp raw RGB is 3 channels
-            const r = pixels[i];
-            const g = pixels[i+1];
-            const b = pixels[i+2];
-            
-            // Skip pure whites/blacks/grays
+        for (let i = 0; i < pixels.length; i += 3) {
+            const r = pixels[i], g = pixels[i+1], b = pixels[i+2];
             if ((r > 240 && g > 240 && b > 240) || (r < 15 && g < 15 && b < 15)) continue; 
-            
             const hex = "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
             colorCounts[hex] = (colorCounts[hex] || 0) + 1;
         }
@@ -86,13 +89,13 @@ app.post('/match', async (req, res) => {
             
         console.log(`✂️ Cropped & Resized to: ${processedImageBuffer.info.width}x${processedImageBuffer.info.height}`);
 
-        // 4. AI Vectorization (768 Dimensions)
+        // 4. AI Vectorization
         console.time("⏱️ AI Inference");
         const rawImage = new RawImage(
             processedImageBuffer.data, 
             processedImageBuffer.info.width, 
             processedImageBuffer.info.height, 
-            3 // 3 Channels for RGB
+            3
         );
         
         const output = await extractor(rawImage, { pooling: 'mean', normalize: true });
@@ -100,7 +103,7 @@ app.post('/match', async (req, res) => {
         console.timeEnd("⏱️ AI Inference");
         console.log(`🤖 Vectorized locally to ${vector.length} dimensions.`);
 
-        // 5. Query Supabase Database
+        // 5. Query Supabase
         if (!supabase) throw new Error("Supabase is not configured on the server.");
         
         console.time("⏱️ DB Match");
