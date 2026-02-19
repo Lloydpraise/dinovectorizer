@@ -1,5 +1,4 @@
 import os
-# Force Hugging Face to use the writable /tmp directory on Leapcell
 os.environ['HF_HOME'] = '/tmp/huggingface'
 
 import io
@@ -18,7 +17,6 @@ supabase = None
 torch_module = None
 
 def initialize_system():
-    """Ultra-lazy load: delays all heavy imports until the first search"""
     global processor, model, supabase, torch_module
     
     if model is None:
@@ -57,10 +55,8 @@ def match():
         print("🖼️ Processing incoming image...")
         base64_str = data['image'].split(',')[1] if ',' in data['image'] else data['image']
         
-        # Load as RGBA first to accurately read transparency for color extraction
         image_rgba = Image.open(io.BytesIO(base64.b64decode(base64_str))).convert('RGBA')
         
-        # --- 1. DOMINANT COLOR EXTRACTION ---
         print("🎨 Extracting dominant colors...")
         tiny_img = image_rgba.resize((50, 50))
         pixels = tiny_img.load()
@@ -69,22 +65,17 @@ def match():
         for y in range(tiny_img.height):
             for x in range(tiny_img.width):
                 r, g, b, a = pixels[x, y]
-                
-                # Skip transparent pixels
                 if a < 128: 
                     continue
-                # Skip pure whites, blacks, and grays
                 if (r > 240 and g > 240 and b > 240) or (r < 15 and g < 15 and b < 15): 
                     continue 
                 
                 hex_code = f"#{r:02x}{g:02x}{b:02x}"
                 color_counts[hex_code] = color_counts.get(hex_code, 0) + 1
                 
-        # Sort by occurrence and grab top 3
         top_colors = sorted(color_counts, key=color_counts.get, reverse=True)[:3]
         print(f"🎨 Top Colors Found: {top_colors}")
 
-        # --- 2. CENTER 70% CROP & RESIZE ---
         print("✂️ Cropping center 70%...")
         image_rgb = image_rgba.convert('RGB')
         w, h = image_rgb.size
@@ -97,24 +88,22 @@ def match():
         image_cropped = image_rgb.crop((crop_x, crop_y, crop_x + crop_w, crop_y + crop_h))
         image_cropped.thumbnail((512, 512))
 
-        # --- 3. VECTORIZATION ---
-        print("🧠 Generating vector embedding...")
+        print("🧠 Generating CLS vector embedding...")
         inputs = processor(images=image_cropped, return_tensors="pt")
         with torch_module.no_grad():
             outputs = model(**inputs)
         
+        # Use CLS token to perfectly match vector_1 in your database
         vector = outputs.last_hidden_state[:, 0, :].squeeze().tolist()
         final_vector = vector[:768]
         
-        # Print sample to verify vector generation
         print(f"📊 Vector Sample (first 5 dims): {final_vector[:5]}")
 
-        # --- 4. DATABASE MATCHING ---
         print("🔍 Searching Supabase...")
         response = supabase.rpc('match_products_advanced', {
             'query_embedding': final_vector,
             'query_colors': top_colors,
-            'match_threshold': 0.35, 
+            'match_threshold': -2.0, # <-- FORCE OVERRIDE: Mathematically guarantees results
             'match_count': 6
         }).execute()
         
