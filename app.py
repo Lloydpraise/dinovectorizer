@@ -3,6 +3,7 @@ os.environ['HF_HOME'] = '/tmp/huggingface'
 
 import io
 import base64
+import gc
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
@@ -10,48 +11,27 @@ from PIL import Image
 app = Flask(__name__)
 CORS(app)
 
-# Global placeholders
-processor = None
-model = None
+# Supabase is lightweight, we can keep it connected globally
 supabase = None
-torch_module = None
-detector = None
 
-def initialize_system():
-    global processor, model, supabase, torch_module, detector
-    
-    if model is None:
-        print("⏳ First request: Importing heavy AI libraries...")
-        import torch
-        from transformers import AutoImageProcessor, AutoModel, pipeline
-        from supabase import create_client
-        
-        torch_module = torch
-
+def init_db():
+    global supabase
+    if supabase is None:
         print("🔌 Connecting to Supabase...")
+        from supabase import create_client
         supabase = create_client(
             os.environ.get("SUPABASE_URL"), 
             os.environ.get("SUPABASE_ANON_KEY")
         )
 
-        print("📥 Loading DINOv2 (Feature Extractor)...")
-        processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
-        model = AutoModel.from_pretrained('facebook/dinov2-base')
-        model.eval()
-
-        print("📥 Loading DETR (Smart Object Cropper)...")
-        detector = pipeline("object-detection", model="facebook/detr-resnet-50")
-        
-        print("✅ System Fully Initialized.")
-
 @app.route('/')
 def health():
-    return "API is Online. Models will load on the first match request."
+    return "API is Online. Models are loaded sequentially to save RAM."
 
 @app.route('/match', methods=['POST'])
 def match():
     try:
-        initialize_system()
+        init_db()
 
         data = request.get_json()
         if not data or 'image' not in data:
@@ -79,22 +59,24 @@ def match():
                 color_counts[hex_code] = color_counts.get(hex_code, 0) + 1
                 
         top_colors = sorted(color_counts, key=color_counts.get, reverse=True)[:3]
-        print(f"🎨 Top Colors: {top_colors}")
 
         # --- 2. SMART AUTO-CROP (DETR) ---
-        print("🔎 Scanning image for products (Smart Crop)...")
+        print("📥 Loading DETR (Smart Object Cropper)...")
+        from transformers import pipeline
+        detector = pipeline("object-detection", model="facebook/detr-resnet-50")
+        
+        print("🔎 Scanning image for products...")
         detections = detector(image_rgb)
         
         target_box = None
         if detections:
-            # Filter out weak detections and find the largest object
+            # Filter weak detections and pick the largest object
             valid_detections = [d for d in detections if d['score'] > 0.5]
             if valid_detections:
                 target_box = max(valid_detections, key=lambda d: (d['box']['xmax'] - d['box']['xmin']) * (d['box']['ymax'] - d['box']['ymin']))['box']
 
         if target_box:
-            print(f"🎯 Found object! Cropping to bounding box...")
-            # Add 10% padding to match JavaScript logic
+            print(f"🎯 Found object! Cropping...")
             pad_w = (target_box['xmax'] - target_box['xmin']) * 0.1
             pad_h = (target_box['ymax'] - target_box['ymin']) * 0.1
             crop_x = max(0, target_box['xmin'] - pad_w)
@@ -117,21 +99,39 @@ def match():
         img_byte_arr.seek(0)
         final_image_for_ai = Image.open(img_byte_arr)
 
-        # --- 3. VECTORIZATION ---
+        # --- FREE DETR FROM RAM ---
+        print("🧹 Unloading DETR to free up RAM...")
+        del detector
+        gc.collect()
+
+        # --- 3. VECTORIZATION (DINOv2) ---
+        print("📥 Loading DINOv2 (Feature Extractor)...")
+        import torch
+        from transformers import AutoImageProcessor, AutoModel
+        processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
+        model = AutoModel.from_pretrained('facebook/dinov2-base')
+        model.eval()
+
         print("🧠 Generating CLS vector embedding...")
         inputs = processor(images=final_image_for_ai, return_tensors="pt")
-        with torch_module.no_grad():
+        with torch.no_grad():
             outputs = model(**inputs)
         
         vector = outputs.last_hidden_state[:, 0, :].squeeze().tolist()
         final_vector = vector[:768]
+
+        # --- FREE DINO FROM RAM ---
+        print("🧹 Unloading DINOv2 to free up RAM...")
+        del processor
+        del model
+        gc.collect()
 
         # --- 4. DATABASE MATCHING ---
         print("🔍 Searching Supabase...")
         response = supabase.rpc('match_products_advanced', {
             'query_embedding': final_vector,
             'query_colors': top_colors,
-            'match_threshold': 0.20, # Raised back up since the smart crop fixes the math
+            'match_threshold': 0.20, 
             'match_count': 6
         }).execute()
         
