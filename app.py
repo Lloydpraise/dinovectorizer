@@ -8,14 +8,14 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
 import torch
-from transformers import ViTImageProcessor, ViTModel
+from transformers import AutoImageProcessor, AutoModel
 
 app = Flask(__name__)
 CORS(app)
 
 print("📥 Loading DINOv2 (PyTorch CPU version)...")
-processor = ViTImageProcessor.from_pretrained('facebook/dinov2-base')
-model = ViTModel.from_pretrained('facebook/dinov2-base')
+processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
+model = AutoModel.from_pretrained('facebook/dinov2-base')
 model.eval()
 print("✅ AI Model Ready.")
 
@@ -43,9 +43,9 @@ def match():
         with torch.no_grad():
             outputs = model(**inputs)
         
-        vector = outputs.pooler_output.squeeze().tolist()
+        # C. Get CLS token vector (standard for DINOv2)
+        vector = outputs.last_hidden_state[:, 0, :].squeeze().tolist()
 
-        # C. Return Raw Vector
         return jsonify({"success": True, "vector": vector[:768]})
 
     except Exception as e:
