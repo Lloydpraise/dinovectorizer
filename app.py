@@ -23,7 +23,25 @@ def init_db():
             os.environ.get("SUPABASE_ANON_KEY")
         )
 
-# --- SHARED HELPER: GUARANTEES IDENTICAL CROPS ---
+# --- SHARED HELPER: CLAHE LIGHTING CORRECTION ---
+def apply_clahe(image_rgb):
+    import cv2
+    import numpy as np
+    from PIL import Image
+    
+    img_np = np.array(image_rgb)
+    lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
+    l_channel, a, b = cv2.split(lab)
+    
+    # ClipLimit controls contrast intensity. 3.0 provides a strong but natural lift
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    cl = clahe.apply(l_channel)
+    
+    limg = cv2.merge((cl, a, b))
+    final_img_np = cv2.cvtColor(limg, cv2.COLOR_LAB2RGB)
+    
+    return Image.fromarray(final_img_np)
+
 # --- SHARED HELPER: GUARANTEES IDENTICAL CROPS ---
 def smart_crop(image_rgb, detector):
     # THE FIX: Shrink massive Shopify images before AI processing
@@ -75,14 +93,18 @@ def match():
         image_rgba = Image.open(io.BytesIO(base64.b64decode(base64_str))).convert('RGBA')
         image_rgb = image_rgba.convert('RGB')
         
+        # --- NEW: STUDIO STABILIZER (CLAHE) ---
+        print("💡 Applying CLAHE Lighting Correction...")
+        image_rgb = apply_clahe(image_rgb)
+        
         # Color Extraction
-        tiny_img = image_rgba.resize((50, 50))
+        tiny_img = image_rgb.resize((50, 50))
         pixels = tiny_img.load()
         color_counts = {}
         for y in range(tiny_img.height):
             for x in range(tiny_img.width):
-                r, g, b, a = pixels[x, y]
-                if a < 128: continue
+                r, g, b = pixels[x, y]
+                # Avoid capturing solid white/black backgrounds
                 if (r > 240 and g > 240 and b > 240) or (r < 15 and g < 15 and b < 15): continue 
                 hex_code = f"#{r:02x}{g:02x}{b:02x}"
                 color_counts[hex_code] = color_counts.get(hex_code, 0) + 1
