@@ -29,7 +29,6 @@ def init_db():
 
 # --- SHARED HELPER: CLAHE LIGHTING CORRECTION ---
 def apply_clahe(image_rgb):
-    # OPTIMIZATION: Shrink image slightly before CLAHE to save CPU
     image_rgb.thumbnail((1000, 1000))
     img_np = np.array(image_rgb)
     lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
@@ -43,40 +42,69 @@ def apply_clahe(image_rgb):
     
     return Image.fromarray(final_img_np)
 
-# --- SHARED HELPER: SMART CROP ---
+# --- SHARED HELPER: MULTI-SCALE SMART CROP ---
 def smart_crop(image_rgb, detector):
+    """
+    Runs DETR twice: Full scale and 60% Center Zoom.
+    Uses the pass with the highest detection confidence.
+    """
+    # Pre-resize for efficiency
     image_rgb.thumbnail((800, 800))
+    w, h = image_rgb.size
     
-    detections = detector(image_rgb)
-    target_box = None
-    if detections:
-        valid_detections = [d for d in detections if d['score'] > 0.5]
-        if valid_detections:
-            target_box = max(valid_detections, key=lambda d: (d['box']['xmax'] - d['box']['xmin']) * (d['box']['ymax'] - d['box']['ymin']))['box']
-
-    if target_box:
-        pad_w = (target_box['xmax'] - target_box['xmin']) * 0.1
-        pad_h = (target_box['ymax'] - target_box['ymin']) * 0.1
-        crop_x = max(0, target_box['xmin'] - pad_w)
-        crop_y = max(0, target_box['ymin'] - pad_h)
-        crop_w = min(image_rgb.width, target_box['xmax'] + pad_w)
-        crop_h = min(image_rgb.height, target_box['ymax'] + pad_h)
-        img_cropped = image_rgb.crop((int(crop_x), int(crop_y), int(crop_w), int(crop_h)))
+    # Pass 1: Full Image Detection
+    print("🔎 Pass 1: Full-scale detection...")
+    detections_full = detector(image_rgb)
+    
+    # Pass 2: Center Zoom Detection (60% center)
+    print("🔎 Pass 2: Center-zoom detection (bypassing UI noise)...")
+    left, top, right, bottom = w * 0.2, h * 0.2, w * 0.8, h * 0.8
+    image_zoom = image_rgb.crop((left, top, right, bottom))
+    detections_zoom = detector(image_zoom)
+    
+    # Find the best object in each pass
+    best_full = max([d for d in detections_full if d['score'] > 0.5], key=lambda x: x['score'], default=None)
+    best_zoom = max([d for d in detections_zoom if d['score'] > 0.5], key=lambda x: x['score'], default=None)
+    
+    final_crop = None
+    
+    # Logic: If the zoom pass found a clearer object than the full pass, use it
+    if best_zoom and (not best_full or best_zoom['score'] > best_full['score']):
+        print(f"🎯 Zoom pass won! Confidence: {best_zoom['score']:.2f}")
+        box = best_zoom['box']
+        pad_w, pad_h = (box['xmax'] - box['xmin']) * 0.1, (box['ymax'] - box['ymin']) * 0.1
+        final_crop = image_zoom.crop((
+            int(max(0, box['xmin'] - pad_w)), 
+            int(max(0, box['ymin'] - pad_h)), 
+            int(min(image_zoom.width, box['xmax'] + pad_w)), 
+            int(min(image_zoom.height, box['ymax'] + pad_h))
+        ))
+    elif best_full:
+        print(f"🎯 Full pass won! Confidence: {best_full['score']:.2f}")
+        box = best_full['box']
+        pad_w, pad_h = (box['xmax'] - box['xmin']) * 0.1, (box['ymax'] - box['ymin']) * 0.1
+        final_crop = image_rgb.crop((
+            int(max(0, box['xmin'] - pad_w)), 
+            int(max(0, box['ymin'] - pad_h)), 
+            int(min(w, box['xmax'] + pad_w)), 
+            int(min(h, box['ymax'] + pad_h))
+        ))
     else:
-        w, h = image_rgb.size
-        crop_w, crop_h = int(w * 0.80), int(h * 0.80)
-        crop_x, crop_y = int((w - crop_w) / 2), int((h - crop_h) / 2)
-        img_cropped = image_rgb.crop((crop_x, crop_y, crop_x + crop_w, crop_y + crop_h))
-        
-    img_cropped.thumbnail((512, 512))
+        print("⚠️ No object found in either pass. Falling back to 80% center crop.")
+        cw, ch = int(w * 0.8), int(h * 0.8)
+        cx, cy = int((w - cw) / 2), int((h - ch) / 2)
+        final_crop = image_rgb.crop((cx, cy, cx + cw, cy + ch))
+
+    # Normalize for DINOv2
+    final_crop.thumbnail((512, 512))
     img_byte_arr = io.BytesIO()
-    img_cropped.save(img_byte_arr, format='JPEG', quality=90)
+    final_crop.save(img_byte_arr, format='JPEG', quality=90)
     img_byte_arr.seek(0)
     return Image.open(img_byte_arr)
 
 @app.route('/')
 def health():
-    return "API is Online. Sequential loading optimized."
+    return "API is Online. Multi-scale Smart Crop enabled."
 
 @app.route('/match', methods=['POST'])
 def match():
@@ -93,7 +121,7 @@ def match():
         print("💡 Applying CLAHE Lighting Correction...")
         image_rgb = apply_clahe(image_rgb)
         
-        # Color Extraction from the light-corrected image
+        # Color Extraction from stabilized image
         tiny_img = image_rgb.resize((50, 50))
         pixels = tiny_img.load()
         color_counts = {}
@@ -105,13 +133,13 @@ def match():
                 color_counts[hex_code] = color_counts.get(hex_code, 0) + 1
         top_colors = sorted(color_counts, key=color_counts.get, reverse=True)[:3]
 
-        print("📥 Loading DETR...")
+        print("📥 Initializing DETR detector...")
         detector = pipeline("object-detection", model="facebook/detr-resnet-50")
         final_image_for_ai = smart_crop(image_rgb, detector)
         del detector
         gc.collect()
 
-        print("📥 Loading DINOv2...")
+        print("📥 Initializing DINOv2 extractor...")
         processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
         model = AutoModel.from_pretrained('facebook/dinov2-base')
         model.eval()
@@ -140,6 +168,7 @@ def match():
 
 @app.route('/vectorize', methods=['POST'])
 def vectorize_product():
+    # Keep the same logic as match, but for multiple images
     try:
         init_db()
         data = request.get_json()
