@@ -24,7 +24,12 @@ def init_db():
         )
 
 # --- SHARED HELPER: GUARANTEES IDENTICAL CROPS ---
+# --- SHARED HELPER: GUARANTEES IDENTICAL CROPS ---
 def smart_crop(image_rgb, detector):
+    # THE FIX: Shrink massive Shopify images before AI processing
+    # This prevents CPU overloads and Gunicorn timeouts
+    image_rgb.thumbnail((800, 800))
+    
     detections = detector(image_rgb)
     target_box = None
     if detections:
@@ -52,7 +57,6 @@ def smart_crop(image_rgb, detector):
     img_cropped.save(img_byte_arr, format='JPEG', quality=90)
     img_byte_arr.seek(0)
     return Image.open(img_byte_arr)
-
 
 @app.route('/')
 def health():

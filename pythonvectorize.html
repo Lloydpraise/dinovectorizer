@@ -103,186 +103,185 @@
     </div>
 
     <script>
-        // --- CONSTANTS ---
-        const SUPABASE_URL = "https://xgtnbxdxbbywvzrttixf.supabase.co";
-        const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhndG5ieGR4YmJ5d3Z6cnR0aXhmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY0Nzg5NTAsImV4cCI6MjA3MjA1NDk1MH0.YGk0vFyIJEiSpu5phzV04Mh4lrHBlfYLFtPP_afFtMQ";
-        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    // --- CONSTANTS ---
+    const SUPABASE_URL = "https://xgtnbxdxbbywvzrttixf.supabase.co";
+    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhndG5ieGR4YmJ5d3Z6cnR0aXhmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTY0Nzg5NTAsImV4cCI6MjA3MjA1NDk1MH0.YGk0vFyIJEiSpu5phzV04Mh4lrHBlfYLFtPP_afFtMQ";
+    
+    // FIXED: Renamed to supabaseClient to avoid colliding with the global 'supabase' library
+    const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-        let queue = [];
-        let isRunning = false;
-        let successTotal = 0;
+    let queue = [];
+    let isRunning = false;
+    let successTotal = 0;
 
-        // --- FETCH QUEUE ---
-        async function loadQueue() {
-            const bizId = document.getElementById('businessId').value.trim();
-            if (!bizId) return alert("Please enter a Business ID");
+    // --- FETCH QUEUE ---
+    async function loadQueue() {
+        const bizId = document.getElementById('businessId').value.trim();
+        if (!bizId) return alert("Please enter a Business ID");
 
-            const list = document.getElementById('queueList');
-            list.innerHTML = `<div class="text-center py-4 text-white/50"><i class="fa-solid fa-spinner fa-spin mr-2"></i> Fetching...</div>`;
-            
-            // Only fetch products that have NOT been vectorized yet
-            const { data, error } = await supabase
-                .from('products')
-                .select('id, title, images, shopify_images')
-                .eq('business_id', bizId)
-                .eq('vectorized', false)
-                .limit(200); // Process in batches of 200
+        const list = document.getElementById('queueList');
+        list.innerHTML = `<div class="text-center py-4 text-white/50"><i class="fa-solid fa-spinner fa-spin mr-2"></i> Fetching...</div>`;
+        
+        // FIXED: Using supabaseClient
+        const { data, error } = await supabaseClient
+            .from('products')
+            .select('id, title, images, shopify_images')
+            .eq('business_id', bizId)
+            .eq('vectorized', false)
+            .limit(200); 
 
-            if (error) {
-                list.innerHTML = `<div class="text-center py-4 text-red-400">Error: ${error.message}</div>`;
-                return;
-            }
-
-            queue = data || [];
-            updateQueueUI();
+        if (error) {
+            list.innerHTML = `<div class="text-center py-4 text-red-400">Error: ${error.message}</div>`;
+            return;
         }
 
-        function updateQueueUI() {
-            const list = document.getElementById('queueList');
-            document.getElementById('queueCount').innerText = queue.length;
-            list.innerHTML = '';
-            
-            if(queue.length === 0) {
-                 list.innerHTML = `<div class="text-center text-green-400 text-sm py-10"><i class="fa-solid fa-check-circle text-2xl mb-2 block"></i> All Caught Up!</div>`;
-                 return;
-            }
+        queue = data || [];
+        updateQueueUI();
+    }
 
-            queue.forEach((p, idx) => {
-                const el = document.createElement('div');
-                el.className = "text-xs text-white/60 truncate p-2 border-b border-white/5 flex items-center gap-2";
-                el.innerHTML = `<span class="text-white/30 w-4">${idx + 1}.</span> <span>${p.title}</span>`;
-                list.appendChild(el);
-            });
+    function updateQueueUI() {
+        const list = document.getElementById('queueList');
+        document.getElementById('queueCount').innerText = queue.length;
+        list.innerHTML = '';
+        
+        if(queue.length === 0) {
+             list.innerHTML = `<div class="text-center text-green-400 text-sm py-10"><i class="fa-solid fa-check-circle text-2xl mb-2 block"></i> All Caught Up!</div>`;
+             return;
         }
 
-        // --- WORKER LOOP ---
-        function startWorker() {
-            if (queue.length === 0) return alert("Queue is empty. Fetch products first.");
-            
-            const url = document.getElementById('leapcellUrl').value;
-            if(!url || !url.includes('http')) return alert("Please enter a valid Leapcell App URL.");
+        queue.forEach((p, idx) => {
+            const el = document.createElement('div');
+            el.className = "text-xs text-white/60 truncate p-2 border-b border-white/5 flex items-center gap-2";
+            el.innerHTML = `<span class="text-white/30 w-4">${idx + 1}.</span> <span>${p.title}</span>`;
+            list.appendChild(el);
+        });
+    }
 
-            isRunning = true;
-            document.getElementById('startBtn').classList.add('hidden');
-            document.getElementById('stopBtn').classList.remove('hidden');
-            document.getElementById('activeItem').classList.remove('hidden');
-            
-            processNext();
+    // --- WORKER LOOP ---
+    function startWorker() {
+        if (queue.length === 0) return alert("Queue is empty. Fetch products first.");
+        
+        const url = document.getElementById('leapcellUrl').value;
+        if(!url || !url.includes('http')) return alert("Please enter a valid Leapcell App URL.");
+
+        isRunning = true;
+        document.getElementById('startBtn').classList.add('hidden');
+        document.getElementById('stopBtn').classList.remove('hidden');
+        document.getElementById('activeItem').classList.remove('hidden');
+        
+        processNext();
+    }
+
+    function stopWorker() {
+        isRunning = false;
+        document.getElementById('startBtn').classList.remove('hidden');
+        document.getElementById('stopBtn').classList.add('hidden');
+        document.getElementById('activeItem').classList.add('hidden');
+    }
+
+    async function processNext() {
+        if (!isRunning || queue.length === 0) {
+            stopWorker();
+            if(queue.length === 0) updateQueueUI();
+            return;
         }
 
-        function stopWorker() {
-            isRunning = false;
-            document.getElementById('startBtn').classList.remove('hidden');
-            document.getElementById('stopBtn').classList.add('hidden');
-            document.getElementById('activeItem').classList.add('hidden');
-        }
+        const item = queue.shift();
+        updateQueueUI(); 
+        document.getElementById('activeTitle').innerText = item.title;
 
-        async function processNext() {
-            if (!isRunning || queue.length === 0) {
-                stopWorker();
-                if(queue.length === 0) updateQueueUI();
-                return;
-            }
-
-            const item = queue.shift();
-            updateQueueUI(); // Remove from UI list
-            document.getElementById('activeTitle').innerText = item.title;
-
-            // Normalize Images array
-            let imgArray = [];
+        // Normalize Images array
+        let imgArray = [];
+        try { 
+            imgArray = typeof item.shopify_images === 'string' ? JSON.parse(item.shopify_images) : item.shopify_images; 
+        } catch(e) {}
+        
+        if (!imgArray || imgArray.length === 0) {
             try { 
-                imgArray = typeof item.shopify_images === 'string' ? JSON.parse(item.shopify_images) : item.shopify_images; 
+                imgArray = typeof item.images === 'string' ? JSON.parse(item.images) : item.images; 
             } catch(e) {}
-            
-            if (!imgArray || imgArray.length === 0) {
-                try { 
-                    imgArray = typeof item.images === 'string' ? JSON.parse(item.images) : item.images; 
-                } catch(e) {}
-            }
-
-            const previewImg = (imgArray && imgArray.length > 0) ? imgArray[0] : 'https://via.placeholder.com/150';
-
-            try {
-                const leapcellUrl = document.getElementById('leapcellUrl').value.trim();
-                const delayMs = parseInt(document.getElementById('delayMs').value) || 15000;
-
-                // Send to Python Backend
-                const response = await fetch(leapcellUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: item.id, images: imgArray })
-                });
-
-                const result = await response.json();
-
-                if (response.ok && result.success) {
-                    // Update Success Grid
-                    successTotal++;
-                    document.getElementById('successCount').innerText = successTotal;
-                    renderCompletedCard(item.id, item.title, previewImg, result.updated_columns);
-                } else {
-                    console.error("Backend Error on", item.id, result.error);
-                    renderFailedCard(item.title, result.error || "Server Error");
-                }
-
-                // Wait to clear RAM before sending next
-                setTimeout(processNext, delayMs);
-
-            } catch (err) {
-                console.error("Network Error on", item.id, err);
-                renderFailedCard(item.title, "Network/Timeout Error");
-                
-                // If it's a network error, stop the worker to prevent a flood of failures
-                stopWorker();
-                alert("Worker stopped due to Network Error. Please check backend server.");
-            }
         }
 
-        // --- RENDER CARDS ---
-        function renderCompletedCard(id, title, imgUrl, updatedColumns) {
-            const grid = document.getElementById('resultsGrid');
-            
-            // Generate Badges for which vectors were saved
-            let badges = '';
-            ['vector_1', 'vector_2', 'vector_3'].forEach(v => {
-                if(updatedColumns.includes(v)) {
-                    badges += `<span class="bg-green-500/20 text-green-400 border border-green-500/30 px-1 rounded text-[8px] uppercase">${v.replace('_', '')}</span>`;
-                }
+        const previewImg = (imgArray && imgArray.length > 0) ? imgArray[0] : 'https://via.placeholder.com/150';
+
+        try {
+            const leapcellUrl = document.getElementById('leapcellUrl').value.trim();
+            const delayMs = parseInt(document.getElementById('delayMs').value) || 15000;
+
+            // Send to Python Backend
+            const response = await fetch(leapcellUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: item.id, images: imgArray })
             });
 
-            const card = document.createElement('div');
-            card.className = "bg-[#1a1d23] border border-[#2b2f3a] rounded-lg overflow-hidden fade-in flex flex-col h-48";
-            card.innerHTML = `
-                <div class="h-32 bg-black/50 p-2 flex items-center justify-center relative">
-                    <img src="${imgUrl}" class="max-h-full max-w-full object-contain mix-blend-lighten">
-                    <div class="absolute top-2 right-2 flex gap-1">
-                        ${badges}
-                    </div>
-                </div>
-                <div class="p-2 border-t border-[#2b2f3a] flex-1 flex flex-col justify-center">
-                    <div class="text-xs text-white/90 font-medium truncate" title="${title}">${title}</div>
-                    <div class="text-[9px] text-white/40 font-mono mt-0.5">${id.split('_').pop()}</div>
-                </div>
-            `;
-            grid.prepend(card);
-        }
+            const result = await response.json();
 
-        function renderFailedCard(title, errorMsg) {
-            const grid = document.getElementById('resultsGrid');
-            const card = document.createElement('div');
-            card.className = "bg-red-900/10 border border-red-900/50 rounded-lg overflow-hidden fade-in flex flex-col h-48";
-            card.innerHTML = `
-                <div class="h-32 bg-black/50 flex flex-col items-center justify-center text-red-500/50 p-4 text-center">
-                    <i class="fa-solid fa-triangle-exclamation text-2xl mb-2"></i>
-                    <div class="text-[9px] leading-tight line-clamp-3">${errorMsg}</div>
-                </div>
-                <div class="p-2 border-t border-red-900/30 flex-1 flex flex-col justify-center">
-                    <div class="text-xs text-red-400 font-medium truncate" title="${title}">${title}</div>
-                    <div class="text-[9px] text-red-500/50 font-mono mt-0.5">FAILED</div>
-                </div>
-            `;
-            grid.prepend(card);
+            if (response.ok && result.success) {
+                successTotal++;
+                document.getElementById('successCount').innerText = successTotal;
+                renderCompletedCard(item.id, item.title, previewImg, result.updated_columns);
+            } else {
+                console.error("Backend Error on", item.id, result.error);
+                renderFailedCard(item.title, result.error || "Server Error");
+            }
+
+            // Wait to clear RAM before sending next
+            setTimeout(processNext, delayMs);
+
+        } catch (err) {
+            console.error("Network Error on", item.id, err);
+            renderFailedCard(item.title, "Network/Timeout Error");
+            
+            stopWorker();
+            alert("Worker stopped due to Network Error. Please check backend server.");
         }
-    </script>
+    }
+
+    // --- RENDER CARDS ---
+    function renderCompletedCard(id, title, imgUrl, updatedColumns) {
+        const grid = document.getElementById('resultsGrid');
+        
+        let badges = '';
+        ['vector_1', 'vector_2', 'vector_3'].forEach(v => {
+            if(updatedColumns.includes(v)) {
+                badges += `<span class="bg-green-500/20 text-green-400 border border-green-500/30 px-1 rounded text-[8px] uppercase">${v.replace('_', '')}</span>`;
+            }
+        });
+
+        const card = document.createElement('div');
+        card.className = "bg-[#1a1d23] border border-[#2b2f3a] rounded-lg overflow-hidden fade-in flex flex-col h-48";
+        card.innerHTML = `
+            <div class="h-32 bg-black/50 p-2 flex items-center justify-center relative">
+                <img src="${imgUrl}" class="max-h-full max-w-full object-contain mix-blend-lighten">
+                <div class="absolute top-2 right-2 flex gap-1">
+                    ${badges}
+                </div>
+            </div>
+            <div class="p-2 border-t border-[#2b2f3a] flex-1 flex flex-col justify-center">
+                <div class="text-xs text-white/90 font-medium truncate" title="${title}">${title}</div>
+                <div class="text-[9px] text-white/40 font-mono mt-0.5">${id.split('_').pop()}</div>
+            </div>
+        `;
+        grid.prepend(card);
+    }
+
+    function renderFailedCard(title, errorMsg) {
+        const grid = document.getElementById('resultsGrid');
+        const card = document.createElement('div');
+        card.className = "bg-red-900/10 border border-red-900/50 rounded-lg overflow-hidden fade-in flex flex-col h-48";
+        card.innerHTML = `
+            <div class="h-32 bg-black/50 flex flex-col items-center justify-center text-red-500/50 p-4 text-center">
+                <i class="fa-solid fa-triangle-exclamation text-2xl mb-2"></i>
+                <div class="text-[9px] leading-tight line-clamp-3">${errorMsg}</div>
+            </div>
+            <div class="p-2 border-t border-red-900/30 flex-1 flex flex-col justify-center">
+                <div class="text-xs text-red-400 font-medium truncate" title="${title}">${title}</div>
+                <div class="text-[9px] text-red-500/50 font-mono mt-0.5">FAILED</div>
+            </div>
+        `;
+        grid.prepend(card);
+    }
+</script>
 </body>
 </html>
