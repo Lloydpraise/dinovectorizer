@@ -219,6 +219,102 @@ def vectorize_product():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# --- REUSABLE COLOR HELPER ---
+def extract_top_colors(image_rgb):
+    """Uses your existing logic to get top 3 non-white/non-black colors."""
+    tiny_img = image_rgb.resize((50, 50))
+    pixels = tiny_img.load()
+    color_counts = {}
+    for y in range(tiny_img.height):
+        for x in range(tiny_img.width):
+            r, g, b = pixels[x, y]
+            # Ignore pure white and pure black (UI/Background noise)
+            if (r > 240 and g > 240 and b > 240) or (r < 15 and g < 15 and b < 15): 
+                continue 
+            hex_code = f"#{r:02x}{g:02x}{b:02x}"
+            color_counts[hex_code] = color_counts.get(hex_code, 0) + 1
+    return sorted(color_counts, key=color_counts.get, reverse=True)[:3]
+
+@app.route('/index-video-frame', methods=['POST'])
+def index_video_frame():
+    """
+    Called by the Ingestor. 
+    Handles: CLAHE -> Color Extraction -> DINOv2 (768) -> Supabase Save
+    """
+    try:
+        init_db()
+        data = request.get_json()
+        
+        # 1. Validate Input
+        video_id = data.get('video_id')
+        product_id = data.get('product_id')
+        image_url = data.get('image_url')
+        caption_prefix = data.get('caption_prefix', "")
+
+        if not all([video_id, product_id, image_url]):
+            return jsonify({"error": "Missing video_id, product_id, or image_url"}), 400
+
+        # 2. Fetch and Prep Image
+        resp = requests.get(image_url, timeout=15)
+        if resp.status_code != 200:
+            return jsonify({"error": "Failed to download image from storage"}), 400
+            
+        image_rgba = Image.open(io.BytesIO(resp.content)).convert('RGBA')
+        image_rgb = image_rgba.convert('RGB')
+        
+        print(f"🎬 Processing video frame for product: {product_id}")
+        
+        # 3. Apply Lighting Correction (CLAHE)
+        image_corrected = apply_clahe(image_rgb)
+        
+        # 4. Extract Colors (Using your specific threshold logic)
+        top_colors = extract_top_colors(image_corrected)
+        
+        # 5. Generate DINOv2 Vector (768 dims for 'base' model)
+        print("📥 Initializing DINOv2-base for indexing...")
+        processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
+        model = AutoModel.from_pretrained('facebook/dinov2-base')
+        model.eval()
+
+        inputs = processor(images=image_corrected, return_tensors="pt")
+        with torch.no_grad():
+            outputs = model(**inputs)
+        
+        # Extraction logic consistent with your /match route
+        final_vector = outputs.last_hidden_state[:, 0, :].squeeze().tolist()[:768]
+
+        # Cleanup memory immediately
+        del processor, model
+        gc.collect()
+
+        # 6. Update Database
+        # First, ensure the video entry exists (using your caption anchor)
+        supabase.table("videos").upsert({
+            "id": video_id, 
+            "caption_prefix": caption_prefix
+        }).execute()
+
+        # Second, insert the frame with the vector and colors
+        db_response = supabase.table("product_frames").insert({
+            "video_id": video_id,
+            "product_id": product_id,
+            "embedding": final_vector,
+            "colors": top_colors,
+            "frame_url": image_url
+        }).execute()
+
+        print(f"✅ Success: Indexed {product_id} from video {video_id}")
+        return jsonify({
+            "success": True, 
+            "product_id": product_id, 
+            "colors": top_colors
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"🚨 Indexing Error: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+        
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
